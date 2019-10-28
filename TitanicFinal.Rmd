@@ -1,0 +1,160 @@
+---
+title: "Titanic"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Opening data and making train test data 
+```{r}
+setwd("~/Desktop/Kaggle/titanic")
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+Exploring the structure of data, finding target variable 
+```{r}
+str(train)
+sapply(train, class)
+colnames(train)
+colnames(test)
+```
+
+Checking for missing values and imputing 
+```{r}
+apply(is.na(train), 2, sum)  
+apply(is.na(test), 2, sum) 
+```
+
+Model 1, Null model, create a column on test where everyone dies, submit as csv
+```{r}
+table(train$Survived)
+prop.table(table(train$Survived)) #Probability of survival
+prop.table(table(train$Sex, train$Survived),1)  # we use 1 after to make sure it divides by the group
+
+test$Survived <- rep(0, 418)
+
+nullmodel <- data.frame(PassengerId = test$PassengerId, Survived = test$Survived)
+write.csv(nullmodel, file = "theydie.csv", row.names = FALSE)
+```
+
+
+Feature engineering 
+```{r}
+train$is_child <- 0
+train$is_child[train$Age < 18] <-1 
+aggregate(Survived ~ is_child + Sex, data=train, FUN=length)
+aggregate(Survived ~ is_child + Sex, data=train, FUN=function(x) {sum(x)/length(x)})  #probability of survival
+train$Fare_fe <- '30+'
+train$Fare__fe[train$Fare < 30 & train$Fare >= 20] <- '20-30'
+train$Fare_fe[train$Fare < 20 & train$Fare >= 10] <- '10-20'
+train$Fare_fe[train$Fare < 10] <- '<10'
+aggregate(Survived ~ Fare_fe+ Pclass + Sex, data=train, FUN=function(x) {sum(x)/length(x)})
+```
+
+Model 2 (and 1.5)
+```{r}
+test$Survived[test$Sex == 'female'] <- 1 #Model 1.5 
+test$Survived[test$Sex == 'female' & test$Pclass == 3 & test$Fare >= 20] <- 0 #Model 2
+
+#third model submission 
+gender <- data.frame(PassengerId = test$PassengerId, Survived = test$Survived)
+ 
+ write.csv(gender, file = "genderclassmodel.csv", row.names = FALSE)
+```
+
+Model 3 
+```{r}
+gender1 <- rpart(Survived ~ Sex, data=train, method="class") #this is the last model I developed 
+plot(gender1)
+text(gender1)
+fancyRpartPlot(gender1)  #Much nicer plots than base R 
+
+##Overfitting tree (adding everything)
+excess <- rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked, data=train, method="class")
+plot(excess)
+text(excess)
+fancyRpartPlot(excess) 
+
+### To find optimal we have to use cross validation 
+new <- rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked, data=train,
+                method="class", control=rpart.control(minsplit=2, cp=0.005))
+fancyRpartPlot(new)
+#Predict and submit 
+predict <- predict(new, test, type = "class")
+submit_3 <- data.frame(PassengerId = test$PassengerId, Survived = predict)
+write.csv(submit_3, file = "Tree.csv", row.names = FALSE)
+```
+
+For some additional feature engineering I looked to the internet for inspiration ! To begin with 
+```{r}
+#Join together the test and train sets for easier feature engineering
+test$Survived <- NA
+combi <- rbind(train, test)
+combi$Name <- as.character(combi$Name) #Convert to string 
+combi$Title <- sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
+combi$Title <- sub(' ', '', combi$Title)
+combi$Title[combi$Title %in% c('Mme', 'Mlle')] <- 'Mlle'
+combi$Title[combi$Title %in% c('Capt', 'Don', 'Major', 'Sir')] <- 'Sir'
+combi$Title[combi$Title %in% c('Dona', 'Lady', 'the Countess', 'Jonkheer')] <- 'Lady'
+combi$Title <- factor(combi$Title)
+combi$FamilySize <- combi$SibSp + combi$Parch + 1 #Family size 
+
+#Engineered variable: Family
+combi$Surname <- sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][1]})
+combi$FamilyID <- paste(as.character(combi$FamilySize), combi$Surname, sep="")
+combi$FamilyID[combi$FamilySize <= 2] <- 'Small'
+combi$FamilyID <- factor(combi$FamilyID)
+
+##Fare,Embarked and age have nulls
+#Embarked
+apply(is.na(combi), 2, sum)  
+summary(combi$Embarked)
+which(combi$Embarked == '')
+combi$Embarked[c(62,830)] = "S"
+combi$Embarked <- factor(combi$Embarked)
+#Fare
+summary(combi$Fare)
+which(is.na(combi$Fare))
+combi$Fare[1044] <- median(combi$Fare, na.rm=TRUE)
+
+# New factor for Random Forests, only allowed <32 levels, so reduce number
+combi$FamilyID2 <- combi$FamilyID
+# Convert back to string
+combi$FamilyID2 <- as.character(combi$FamilyID2)
+combi$FamilyID2[combi$FamilySize <= 3] <- 'Small'
+# And convert back to factor
+combi$FamilyID2 <- factor(combi$FamilyID2)
+
+##Age
+summary(combi$Age)
+Agefit <- rpart(Age ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + Title + FamilySize, 
+                data=combi[!is.na(combi$Age),], method="anova")
+combi$Age[is.na(combi$Age)] <- predict(Agefit, combi[is.na(combi$Age),])
+```
+
+Model 4
+```{r}
+train <- combi[1:891,]
+test <- combi[892:1309,]
+
+set.seed(415) #No.1
+fit <- randomForest(as.factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID2,
+                    data=train, importance=TRUE, ntree=2000)
+varImpPlot(fit)
+
+set.seed(415) #No.1
+cfit <- cforest(as.factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID,
+               data = train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
+
+```
+
+```{r}
+prediction 
+Prediction <- predict(fit, test, OOB=TRUE, type = "response")
+submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
+write.csv(submit, file = "ciforest.csv", row.names = FALSE)
+```
+
