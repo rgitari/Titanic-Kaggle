@@ -1,4 +1,4 @@
-Titanic: Machine Learning from Disaster - Getting Started With R
+Titanic Data Science Project
 ================================================================
 Robert Gitari 
 
